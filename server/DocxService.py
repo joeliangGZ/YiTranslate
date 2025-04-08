@@ -39,13 +39,10 @@ class DocumentEntity:
 
 @app.post("/upload")
 async def process_document(file: UploadFile = File(...)):
-    # 1. 提取内容（假设已有实现）
+
     doc_entity = extract_content(file)
 
-    # 2. 并发翻译
     await batch_translate(doc_entity.items)
-
-    # 3. 填充模板（假设已有实现）
     return fill_template(doc_entity)
 
 def extract_content(file: UploadFile):
