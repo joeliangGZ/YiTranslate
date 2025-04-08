@@ -17,6 +17,9 @@
       </list>
     </option>
   </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
   <component name="GoLibraries">
     <option name="indexEntireGoPath" value="true" />
   </component>
@@ -27,6 +30,7 @@
     <option name="version" value="2" />
   </component>
   <component name="ProjectId" id="2vE9mlHsyPXXxUGUXsYYLBI57JO" />
+  <component name="ProjectLevelVcsManager" settingsEditedManually="true" />
   <component name="ProjectViewState">
     <option name="autoscrollFromSource" value="true" />
     <option name="autoscrollToSource" value="true" />
@@ -88,7 +92,7 @@
       <option name="presentableId" value="Default" />
       <updated>1743699527671</updated>
       <workItem from="1743699529591" duration="274000" />
-      <workItem from="1743730221876" duration="18180000" />
+      <workItem from="1743730221876" duration="18788000" />
     </task>
     <servers />
   </component>
