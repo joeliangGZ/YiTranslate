@@ -22,7 +22,7 @@ TEMPLATE_DIR = "templates/"
 PRODUCT_DIR = "products/"
 Path(TEMPLATE_DIR).mkdir(parents=True, exist_ok=True)
 Path(PRODUCT_DIR).mkdir(parents=True, exist_ok=True)
-CONCURRENCY_LIMIT = 20
+CONCURRENCY_LIMIT = 100
 
 class DocumentItem:
     def __init__(self, placeholder_number: int, original_content: str, translate_content: str = None):
@@ -53,7 +53,14 @@ def extract_content(file: UploadFile):
         template_filename = f"{base_name}_template_{int(time.time())}.docx"
 
         # 读取上传文件
-        doc = Document(file.file)
+        # doc = Document(file.file)
+
+        # 将文件内容读取到内存
+        file_content = file.file.read()
+        file_stream = BytesIO(file_content)
+
+        # 使用BytesIO创建文档对象
+        doc = Document(file_stream)
 
         items = []
         current_num = 1
@@ -72,6 +79,9 @@ def extract_content(file: UploadFile):
         # 保存模板文件
         template_path = os.path.join(TEMPLATE_DIR, template_filename)
         doc.save(template_path)
+
+        # 重置BytesIO指针以便后续操作（如果需要）
+        file_stream.seek(0)
 
         return DocumentEntity(doc_id, original_filename, template_filename, items)
 
