@@ -14,10 +14,20 @@ from docx.shared import Pt
 from docx.text.paragraph import Paragraph
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
+from starlette.middleware.cors import CORSMiddleware
 
 from YiTranslateSolely import translate_text
 
 app = FastAPI()
+
+# 添加 CORS 配置
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],  # 允许的前端源
+    allow_credentials=True,
+    allow_methods=["*"],  # 允许所有 HTTP 方法（如 POST）
+    allow_headers=["*"],  # 允许所有头部
+)
 
 TEMPLATE_DIR = "templates/"
 PRODUCT_DIR = "products/"
@@ -159,9 +169,6 @@ async def batch_translate(items: List[DocumentItem]):
     await asyncio.gather(*[_translate(item) for item in items])
 
 def fill_template(doc_entity: DocumentEntity):
-    """
-    读取模板文件，替换 {{ n }} 占位符为翻译内容，并返回下载流。
-    """
     template_path = os.path.join(TEMPLATE_DIR, doc_entity.template_filename)
     doc = Document(template_path)
 
@@ -179,17 +186,30 @@ def fill_template(doc_entity: DocumentEntity):
                     if placeholder in cell.text:
                         cell.text = cell.text.replace(placeholder, item.translate_content or "")
 
-    # 输出最终文档
-    output_stream = BytesIO()
-    doc.save(output_stream)
-    output_stream.seek(0)
+    # 保存到临时文件
+    output_filename = f"translated_{doc_entity.original_filename}"
+    output_path = os.path.join(PRODUCT_DIR, output_filename)
+    doc.save(output_path)
 
-    filename = f"translated_{doc_entity.original_filename}"
-    return StreamingResponse(
-        output_stream,
+    # 检查文件是否生成
+    if not os.path.exists(output_path):
+        raise HTTPException(status_code=500, detail="生成文件失败")
+    print(f"生成文件: {output_path}, 大小: {os.path.getsize(output_path)} 字节")
+
+    # 返回文件流
+    def file_stream():
+        with open(output_path, "rb") as f:
+            data = f.read()
+            print(f"返回文件流，大小: {len(data)} 字节")
+            yield data
+
+    response = StreamingResponse(
+        file_stream(),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        headers={"Content-Disposition": f'attachment; filename="{output_filename}"'}
     )
+    return response
+
 
 if __name__ == "__main__":
     uvicorn.run("DocxService:app", host="0.0.0.0", port=8081)
