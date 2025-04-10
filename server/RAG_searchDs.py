@@ -9,7 +9,7 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_deepseek import ChatDeepSeek  # 假设使用官方SDK
 
 # 0. 设置Deepseek API密钥（根据实际SDK要求）
-os.environ["DEEPSEEK_API_KEY"] = "sk-288d9a1cb468466bb6fd2235933dad4e"
+os.environ["DEEPSEEK_API_KEY"] = "your_deepseek_api_key"
 
 # 1. 准备专用名词知识库（保持不变）
 terms = [
