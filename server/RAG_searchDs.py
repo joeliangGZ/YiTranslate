@@ -1,15 +1,19 @@
-import os
+import json
 
 from langchain.docstore.document import Document
-from langchain_huggingface import HuggingFaceEmbeddings # 使用开源Embeddings
 from langchain_community.vectorstores import Chroma
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_deepseek import ChatDeepSeek  # 假设使用官方SDK
+from langchain_huggingface import HuggingFaceEmbeddings  # 使用开源Embeddings
 
-# 0. 设置Deepseek API密钥（根据实际SDK要求）
-os.environ["DEEPSEEK_API_KEY"] = "your_deepseek_api_key"
+with open("config.json", "r", encoding="utf-8") as f:
+    config = json.load(f)
+
+api_key = config.get("api_key")
+base_url = config.get("base_url")
+model = config.get("model")
 
 # 1. 准备专用名词知识库（保持不变）
 terms = [
@@ -38,12 +42,10 @@ retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
 # 3. 创建Deepseek客户端（根据实际SDK调整）
 llm = ChatDeepSeek(
-    model="deepseek-chat",
-    temperature=0,
-    max_tokens=None,
-    timeout=None,
-    max_retries=2,
-    # api_key="...",
+    model=model,
+    temperature=1.3,
+    max_tokens=8000,
+    api_key=api_key,
     # other params...
 )
 
