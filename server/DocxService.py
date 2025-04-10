@@ -5,10 +5,11 @@ import time
 import uuid
 from io import BytesIO
 from pathlib import Path
-from typing import List, Dict
+from typing import List
 
 import uvicorn
 from docx import Document
+from docx.oxml.ns import qn
 from docx.shared import Pt
 from docx.text.paragraph import Paragraph
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -45,24 +46,20 @@ async def process_document(file: UploadFile = File(...)):
     await batch_translate(doc_entity.items)
     return fill_template(doc_entity)
 
-def extract_content(file: UploadFile):
+
+def extract_content(file: UploadFile) -> DocumentEntity:
     try:
         doc_id = str(uuid.uuid4())
         original_filename = file.filename or "uploaded.docx"
-        base_name = original_filename.replace(".docx", "")
+        base_name = os.path.splitext(original_filename)[0]
         template_filename = f"{base_name}_template_{int(time.time())}.docx"
 
-        # 读取上传文件
-        # doc = Document(file.file)
-
-        # 将文件内容读取到内存
+        # 读取上传文件到内存
         file_content = file.file.read()
         file_stream = BytesIO(file_content)
-
-        # 使用BytesIO创建文档对象
         doc = Document(file_stream)
 
-        items = []
+        items: List[DocumentItem] = []
         current_num = 1
 
         # 处理段落
@@ -76,46 +73,32 @@ def extract_content(file: UploadFile):
                     for paragraph in cell.paragraphs:
                         current_num = process_paragraph(paragraph, current_num, items)
 
-        # 保存模板文件
+        # 保存模板文件 —— 使用 python-docx 的 save 接口
         template_path = os.path.join(TEMPLATE_DIR, template_filename)
         doc.save(template_path)
 
-        # 重置BytesIO指针以便后续操作（如果需要）
-        file_stream.seek(0)
+        # 重置文件流指针（以防后续重用）
+        file.file.seek(0)
 
         return DocumentEntity(doc_id, original_filename, template_filename, items)
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail="文档解析异常")
+        raise HTTPException(status_code=500, detail=f"文档解析异常：{e}")
 
-async def batch_translate(items: List[DocumentItem]):
-    semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
-    tasks = [
-        asyncio.create_task(limited_translate(item, semaphore))
-        for item in items
-    ]
-    await asyncio.gather(*tasks)
 
-async def limited_translate(item: DocumentItem, semaphore):
-    async with semaphore:
-        await translate_item(item)
-
-async def translate_item(item: DocumentItem):
-    try:
-        # 核心调用点
-        item.translate_content = await asyncio.to_thread(
-            translate_text,
-            item.original_content
-        )
-    except Exception as e:
-        item.translate_content = f"[FAILED] {str(e)}"
+def clear_paragraph(paragraph: Paragraph):
+    """
+    安全地清空段落中的所有 run，避免破坏底层 XML 结构。
+    """
+    for run in paragraph.runs[::-1]:
+        paragraph._element.remove(run._element)
 
 def process_paragraph(paragraph: Paragraph, current_num: int, items: List[DocumentItem]) -> int:
     original_text = paragraph.text.strip()
     if not original_text:
         return current_num
 
-    # 匹配编号模式
+    # 匹配编号模式，比如 "1.2. 文本内容"
     pattern = re.compile(r"^(\d+(?:\.\d+)*\s+)(.*)$")
     match = pattern.match(original_text)
 
@@ -127,121 +110,86 @@ def process_paragraph(paragraph: Paragraph, current_num: int, items: List[Docume
         content = original_text
         new_text = f"{{{{ {current_num} }}}}"
 
-    # 获取第一个 Run 的样式（如果存在）
+    # 尝试保留第一个 run 的样式
+    style = None
     if paragraph.runs:
-        source_run = paragraph.runs[0]
-        font = source_run.font
-        # 提取可复制的样式属性
+        run0 = paragraph.runs[0]
+        font = run0.font
         style = {
-            "name": font.name,
-            "size": font.size,
+            "name": font.name or "SimSun",  # 默认中文宋体
+            "size": font.size or Pt(12),
             "bold": font.bold,
             "italic": font.italic,
             "color": font.color.rgb
         }
-    else:
-        style = None
 
-    # 清空段落内容
-    paragraph.clear()
+    # 清空段落
+    clear_paragraph(paragraph)
 
-    # 创建新 Run 并应用样式
+    # 添加新的 run
     new_run = paragraph.add_run(new_text)
     if style:
+        # 设置西文字体
         new_run.font.name = style["name"]
-        if style["size"]:
-            new_run.font.size = Pt(style["size"])
+        # 设置东亚文字（中文）字体
+        new_run._element.rPr.rFonts.set(qn('w:eastAsia'), style["name"])
+        # 字号
+        new_run.font.size = style["size"]
+        # 加粗、斜体
         new_run.font.bold = style["bold"]
         new_run.font.italic = style["italic"]
+        # 颜色
         if style["color"]:
             new_run.font.color.rgb = style["color"]
 
     items.append(DocumentItem(current_num, content))
     return current_num + 1
 
+
+async def batch_translate(items: List[DocumentItem]):
+    """
+    并发调用你的 translate_text 函数，把 items 中的 original_content 翻译后填充到 translate_content。
+    """
+    semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
+
+    async def _translate(item: DocumentItem):
+        async with semaphore:
+            item.translate_content = await translate_text(item.original_content)
+
+    await asyncio.gather(*[_translate(item) for item in items])
+
 def fill_template(doc_entity: DocumentEntity):
-    try:
-        template_path = os.path.join(TEMPLATE_DIR, doc_entity.template_filename)
-        if not os.path.exists(template_path):
-            raise HTTPException(status_code=404, detail="模板文件未找到")
+    """
+    读取模板文件，替换 {{ n }} 占位符为翻译内容，并返回下载流。
+    """
+    template_path = os.path.join(TEMPLATE_DIR, doc_entity.template_filename)
+    doc = Document(template_path)
 
-        # Using attribute access for items as well
-        content_map = {item.placeholder_number: item.translate_content
-                       for item in doc_entity.items}
+    for paragraph in doc.paragraphs:
+        for item in doc_entity.items:
+            placeholder = f"{{{{ {item.placeholder_number} }}}}"
+            if placeholder in paragraph.text:
+                paragraph.text = paragraph.text.replace(placeholder, item.translate_content or "")
 
-        doc = Document(template_path)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for item in doc_entity.items:
+                    placeholder = f"{{{{ {item.placeholder_number} }}}}"
+                    if placeholder in cell.text:
+                        cell.text = cell.text.replace(placeholder, item.translate_content or "")
 
-        # Process paragraphs
-        for paragraph in doc.paragraphs:
-            process_fill_paragraph(paragraph, content_map)
+    # 输出最终文档
+    output_stream = BytesIO()
+    doc.save(output_stream)
+    output_stream.seek(0)
 
-        # Process tables
-        for table in doc.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    for paragraph in cell.paragraphs:
-                        process_fill_paragraph(paragraph, content_map)
-
-        # 将文档保存到内存流
-        buffer = BytesIO()
-        doc.save(buffer)
-        buffer.seek(0)
-
-        # 将内存中的内容写入到本地文件
-        output_filename = doc_entity.original_filename
-        output_path = os.path.join(PRODUCT_DIR, output_filename)
-        with open(output_path, "wb") as f:
-            f.write(buffer.getvalue())
-
-        # 为了防止后面流指针位置问题，再创建一个内存流返回下载
-        download_stream = BytesIO(buffer.getvalue())
-        download_stream.seek(0)
-
-        return StreamingResponse(
-            download_stream,
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={"Content-Disposition": f"attachment; filename={output_filename}"}
-        )
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="文档填充异常")
-
-def process_fill_paragraph(paragraph: Paragraph, content_map: Dict[int, str]):
-    original_text = paragraph.text.strip()
-    if not original_text:
-        return
-
-    # 匹配占位符
-    pattern = re.compile(r"\{\{\s*(\d+)\s*\}\}")
-    new_text = pattern.sub(lambda m: content_map.get(int(m.group(1)), m.group(0)), original_text)
-
-    # 获取第一个 Run 的样式（如果存在）
-    if paragraph.runs:
-        source_run = paragraph.runs[0]
-        font = source_run.font
-        style = {
-            "name": font.name,
-            "size": font.size,
-            "bold": font.bold,
-            "italic": font.italic,
-            "color": font.color.rgb
-        }
-    else:
-        style = None
-
-    # 清空段落内容
-    paragraph.clear()
-
-    # 创建新 Run 并应用样式
-    new_run = paragraph.add_run(new_text)
-    if style:
-        new_run.font.name = style["name"]
-        if style["size"]:
-            new_run.font.size = Pt(style["size"])
-        new_run.font.bold = style["bold"]
-        new_run.font.italic = style["italic"]
-        if style["color"]:
-            new_run.font.color.rgb = style["color"]
+    filename = f"translated_{doc_entity.original_filename}"
+    return StreamingResponse(
+        output_stream,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
 
 if __name__ == "__main__":
-    uvicorn.run("DocxService:app", host="0.0.0.0", port=8080)
+    uvicorn.run("DocxService:app", host="0.0.0.0", port=8081)

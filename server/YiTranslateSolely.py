@@ -15,7 +15,8 @@ model = config.get("model")
 client = OpenAI(api_key=api_key, base_url=base_url,)
 app = FastAPI()
 
-def translate_text(text) -> str:
+
+async def translate_text(text) -> str:
     """
     调用 OpenAI 的 ChatCompletion API 将输入英文翻译为中文，
     保留所有技术术语，仅输出翻译后的文本。
